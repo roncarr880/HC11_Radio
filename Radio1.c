@@ -1,10 +1,13 @@
 
-/*  Retro Computing Radio with 68HC11 */
+/*  Retro Computing Radio with Axiom 68HC11 */
 
 /* ****   Notes
    I think the sync jumper should be on for the LCD timing, enable will follow E stobe.
+   Maybe not, E is the data pin on LCD chipselect, try off first for better address and data setup time.
+   Works with sync off.  Using sync off.
+
    To do:
-      take out the scope loop code on int_delay_us and setup when done looking
+      take out the scope loop code when done looking. It's commented out now.
 
 **** */
 
@@ -22,12 +25,18 @@
 #define CLK_OFF 0
 #define PLLA 26
 #define PLLB 34
+/********  returning to function calls instead of inline macro's
 #define ZACC acc0 = acc1 = acc2 = acc3 = acc4 = 0
 #define ZARG arg0 = arg1 = arg2 = arg3 = arg4 = 0
 #define ZDIVQ divq0 = divq1 = divq2 = divq3 = divq4 = 0
 #define COPY_ACC_ARG  arg0 = acc0,  arg1 = acc1, arg2 = acc2, arg3 = acc3, arg4 = acc4
 #define COPY_ACC_DIVQ  divq0 = acc0,  divq1 = acc1, divq2 = acc2, divq3 = acc3, divq4 = acc4
 #define COPY_DIVQ_ACC  acc0 = divq0, acc1 = divq1, acc2 = divq2, acc3 = divq3, acc4 = divq4
+********/
+#define TERM 1
+#define LCD 2
+#define LEFT 0
+#define RIGHT 1
 
 
 char lcd_mode;
@@ -48,22 +57,23 @@ struct BANDS {      /* we can init a structure but need to access with assembly 
 
 
 /* this will be a RAM/ROM issue, any var that needs an ititial value will need to be set in function init() */
-/* will need a ROM version of bands to copy to the working RAM version */
+/* will need a ROM version of bands to copy to the working RAM version, or battery backed up ram */
 struct BANDS bands[8] = {
    {220,  3928000  },
-   {112,  7074000  },
+   {112,  7039980  },
    { 80, 10138700  },
    { 60, 14074000  },
    { 42, 18100000  },
    { 40, 21094600+1400  },
-   { 32, 24924600  },
+   { 32, 24924600+1000  },
    { 30, 28124600  }
 };
 
-char band = 5;
+char band = 7;
 char divider;
+char step = 3;     /* 10^3 */
 
-/* could have 2 pages in the LCD selected by scrolling left/right by 16 */
+/* have 2 pages in the LCD selected by scrolling left/right by 16 */
 /* 2nd row starts at $40  */
 /* address = row * $40 + page * 16  + column */
 
@@ -77,20 +87,25 @@ char divider;
   JMP main
 #endasm
 
-/* string lits might be better in ROM( program section )  as they won't disappear on power off */
+/* string lits might be better here in ROM( program section )  as they won't disappear on power off */
 /* variables here will work when running from RAM but not when running from ROM */
 char msg2[] = "Hi once more\r\n";
-char msg[] = "Hello 68HC11 SBC\n";   /* putting this in ROM or eeprom for non-monitor startup */
+char msg[] = "Hello 68HC11 SBC\r\n";   /* putting this in ROM or eeprom for non-monitor startup */
 
-
-
+/* ************
+#asm
+  ORG $8000      * try the 32k ram in E6
+#endasm
+************ */
 
 
 void init(){   /* run once */
 
    serial_init();
    lcd_init( FOUR_BIT_MODE );
-   REG[DDRD] = 0x22;       /* SS bit 5 portD as output pin, scope loop !!! */ 
+   I2init();
+
+ /*  REG[DDRD] = 0x22;  */     /* SS bit 5 portD as output pin, scope loop !!! */ 
 
    load_vfo_info( band );
    si5351_init();
@@ -108,7 +123,7 @@ void main(){
 char i;
 
   puts( msg );
-  puts("\r\n");
+  crlf();
   puts( msg2 );
 
   lcd_puts( msg );       /* function call with pointer */
@@ -120,24 +135,52 @@ char i;
   lcd_show_page( 1 );
   delay( 5000, 0 );
   lcd_show_page( 0 );
-  display_freq(freq3, freq2, freq1, freq0);
-  puts( "\r\n");
+  delay( 5000, 0 );
+  lcd_clear_row( 0 );
+  display_freq(TERM+LCD,freq3, freq2, freq1, freq0);
+  crlf();
 
-  for( i = 0; i < 8; ++ i)
-       display_freq( 0, 0, 0, solution[i] );
-  puts( "\r\n");
+  for( i = 0; i < 8; ++ i)  display_freq(TERM, 0, 0, 0, solution[i] );
+  crlf();
 
 
-  for( i = 0; i < 20; ++i ){
+  for( i = 0; i < 10; ++i ){
+    qsy( 1, 1 );          /* up 10 */             
     calc_solution( divider );
     wrt_solution();
-    display_freq( 0,solution[5],solution[6], solution[7] );
-    freq0 = freq0 + 10;              
-    delay( 5000, 0 );
+    display_freq(TERM, freq3, freq2, freq1, freq0 );
+    puts("   ");
+    display_freq(TERM, 0,solution[5],solution[6], solution[7] );
+    delay( 2000, 0 );
   }
+  qsy( 0, 2 );     /* down 100 */
+  qsy( 0, 2 );     /* down another 100 */
+  qsy( 1, 1 );
+  qsy( 1, 1 );    /* up 20 */
+  lcd_clear_row( 1 );
+  lcd_goto( 0, 0, 0 );
+  display_freq(TERM+LCD, freq3, freq2, freq1, freq0 );
+ /* lcd_cursor( LEFT, 4 ); */
+/*  puts("Config register is "); */
+/*  display_freq(TERM, 0,0,0, REG[CONFIG] ); */
+  crlf();
+  while( (REG[TFLG2] & 0x40) == 0 );     /* wait RTI flag */
+  REG[TFLG2] =  0x40;                    /* write one to clear */
+  while( (REG[TFLG2] & 0x40) == 0 );     /* wait RTI flag again to avoid short interval */
+  REG[TFLG2] =  0x40;                    /* write one to clear */
+  while( (REG[TFLG2] & 0x40) == 0 ){     /* how long is RTI period */
+     delay(1,0);
+     putchar('.');
+  }
+  crlf();
 
 }
 
+void crlf(){
+
+  putchar( '\r' );
+  putchar( '\n' );
+}
 
 /* need to use some assembly to access the structure bands, read info and store in char variables */ 
 void load_vfo_info( char band ){
@@ -188,61 +231,144 @@ char offset;
 }
 
 
+/* numbers are stored little endian */
+long decades[9] = { 1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000 };
 
-/* dividers for decades */
-
-char farg3[8] = { 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-char farg2[8] = { 0xf5, 0x98, 0x0f, 0x01, 0x00, 0x00, 0x00, 0x00 };
-char farg1[8] = { 0xe1, 0x96, 0x42, 0x86, 0x27, 0x03, 0x00, 0x00 };
-char farg0[8] = { 0x00, 0x80, 0x40, 0xa0, 0x10, 0xe8, 0x64, 0x0a };
-/* 989680 f4240 186a0 2710 3e8 64 a 1 dividers */
-
-void display_freq(char f3, char f2, char f1, char f0){
+void display_freq(char dev, char f3, char f2, char f1, char f0){
 char i;
+char leading; 
+char c;
 
-   
+   leading = 1;           /* display leading zero's as spaces */
    acc4 = 0; acc3 = f3;  acc2 = f2; acc1 = f1;  acc0 = f0;
 
-   for( i = 0; i < 8; ++i ){
-      arg3 = farg3[i];  arg2 = farg2[i];  arg1 = farg1[i];  arg0 = farg0[i];
+/* watch for branch out of range here */
+   for( i = 32;  ; i = i - 4 ){
       arg4 = 0;
-      COPY_ACC_DIVQ; 
+      #asm
+        LDAB  7,X
+        LDY   #decades
+        ABY
+        LDAB  0,Y
+        STAB  arg0
+        LDAB  1,Y
+        STAB  arg1
+        LDAB  2,Y
+        STAB  arg2
+        LDAB  3,Y
+        STAB  arg3
+      #endasm
+      copy_acc_divq( ); 
       divide();
-      putchar( divq0 + '0' );
+      c = divq0 + '0';
+      if( c != '0' || i == 0 ) leading = 0;
+      if( leading ) c = ' ';
+      if( dev & LCD ){
+          if( i == 20 || i == 8 ) lcd_data( ',' );   /* 14,096,600 formating */
+          lcd_data( c );
+      }
+      if( dev & TERM ) putchar( c );
+      if( i == 0 ) break;                   /* above if branch is out of range */
    }
 
-   putchar( acc0 + '0' );
-   putchar('\r');
-   putchar('\n'); 
+   if( dev & TERM ) crlf();
+   if( dev & LCD ){
+      lcd_cursor( LEFT, step+1 );             /* position cursor at freq step digit */
+      if( step > 2 ) lcd_cursor( LEFT, 1 );   /* skip comma */
+   }
 
 }
 
 
+void qsy( char dir, char step ){
+char i;
+
+   acc4 = 0, acc3 = freq3, acc2 = freq2, acc1 = freq1, acc0 = freq0;
+   i = arg4 = 0;
+   while( step-- ) i = i + 4;
+
+   #asm
+     LDAB 4,X
+     LDY  #decades
+     ABY
+     LDAB  0,Y
+     STAB  arg0
+     LDAB  1,Y
+     STAB  arg1
+     LDAB  2,Y
+     STAB  arg2
+     LDAB  3,Y
+     STAB  arg3
+   #endasm
+     
+   if( dir ) dadd();
+   else dsub();
+   freq3 = acc3, freq2 = acc2, freq1 = acc1, freq0 = acc0;
+   calc_solution( divider );
+   wrt_solution();
+
+
+}
 
 /**********************  40 bit math **********************/
-/* short functions replaced by macros 
 
-zacc(){       /* clear acc 
+void zacc(){       /* clear acc */
 
-   acc0 = acc1 = acc2 = acc3 = 0;
+   acc0 = acc1 = acc2 = acc3 = acc4 = 0;
 }
 
-zarg(){       /* clear arg 
+void zarg(){       /* clear arg */ 
 
-   arg0 = arg1 = arg2 = arg3 = 0;
+   arg0 = arg1 = arg2 = arg3 = arg4 = 0;
 }
 
-copy_acc_arg(){
+void zdivq(){
 
-   arg0 = acc0;  arg1 = acc1; arg2 = acc2; arg3 = acc3;
+   divq0 = divq1 = divq2 = divq3 = divq4 = 0;
+}
+
+void copy_acc_arg(){
+
+  /* arg0 = acc0;  arg1 = acc1; arg2 = acc2; arg3 = acc3; arg4 = acc4; */
+
+   arg4 = acc4;
+   #asm
+     LDD acc3
+     STD arg3
+     LDD acc1
+     STD arg1
+   #endasm
 
 }
 
-copy_acc_divq(){
+void copy_acc_divq(){
 
-   divq0 = acc0;  divq1 = acc1; divq2 = acc2; divq3 = acc3;
+  /*  divq0 = acc0;  divq1 = acc1; divq2 = acc2; divq3 = acc3; divq4 = acc4; */
 
-}   ****  */
+   divq4 = acc4;
+   #asm
+     LDD acc3
+     STD divq3
+     LDD acc1
+     STD divq1
+   #endasm
+
+
+}
+
+void copy_divq_acc(){
+
+  /* acc0 = divq0, acc1 = divq1, acc2 = divq2, acc3 = divq3, acc4 = divq4;  */
+
+   acc4 = divq4;
+   #asm
+     LDD divq3
+     STD acc3
+     LDD divq1
+     STD acc1
+   #endasm
+
+}
 
 
 char dadd(){  /* add the accum and argument, return carry */
@@ -313,7 +439,7 @@ _dsub1
 divide(){
 char divi;
 
-   ZACC;
+   zacc( );
    for( divi = 0; divi < 40; ++divi ){
       #asm
         CLC
@@ -345,12 +471,10 @@ char multiply( ){
 char over;
 
     over = 0;
-    ZACC;
-
-/* puts("Here in mult\n"); */
+    zacc( );
 
     while( divq0|divq1|divq2|divq3|divq4 ){
-       if( divq0 & 1 ) if( dadd() ) over = 1;    /* over + dadd();*/
+       if( divq0 & 1 ) if( dadd() ) over = 1;
  
        #asm
          CLC
@@ -369,8 +493,6 @@ char over;
        #endasm
     }
 
-/* puts("Done\n"); */
-
     return over;
 }
 
@@ -380,7 +502,6 @@ void lcd_show_page( char page ){
 char i;
 char cmd;
 
-  /* page &= 1; */      /*!!! errors */
    page = page & 1;
    if( lcd_page == page ) return;
    cmd = ( page == 1 )? 0x18 : 0x1c;
@@ -428,10 +549,27 @@ char adr;
 
 }
 
+void lcd_clear_row( char row ){
+char i;
 
-/* init seq: 3 8 bit mode sets, actual mode set, mode set 2 line, on, clear, entry mode */
+   lcd_goto( row, 0, lcd_page );
+   for( i = 0; i < 16; ++i ) lcd_data(' ');
+   lcd_goto(row, 0, lcd_page );   
+
+}
+
+void lcd_cursor( char lr, char amt ){    /* shift left or right, 0-left, 1-right */
+char cmd;
+
+    cmd = ( lr )? 0x14 : 0x10;
+    while( amt-- ) lcd_command( cmd );
+
+}
+
+
+/* init seq: 3 8 bit mode sets, actual mode set, mode set 2 line, on cursor steady, clear, entry mode */
 char lcd_dly[8] = { 30,  5,    1,    0,    0,    0,   0,    10};
-char lcd_cmd[8] = {  0x30, 0x30, 0x30, 0xff, 0xfe, 0x0c, 0x01, 0x06 };
+char lcd_cmd[8] = {  0x30, 0x30, 0x30, 0xff, 0xfe, 0x0e, 0x01, 0x06 };
 
 void lcd_init( char mode ){
 char i;
@@ -467,14 +605,14 @@ char i;
      bne _delay1
      TAB               ; xfer less than 255 delay to correct byte
      CLRA
-_delay1:
      STD  2,X
+_delay1:
    #endasm
 
    while( ms ){
-        REG[PORTD] = REG[PORTD] | 0x20;               /* scope trigger for observing delay timing */
+       /* REG[PORTD] = REG[PORTD] | 0x20;    */           /* scope trigger for observing delay timing */
       for( i = 0; i < 4; ++i ) delay_us( 250 );
-        REG[PORTD] = REG[PORTD] & ( 0x20 ^ 0xff );
+       /*  REG[PORTD] = REG[PORTD] & ( 0x20 ^ 0xff ); */
       #asm
          LDY 2,X     ; dec ms
          DEY
@@ -505,6 +643,7 @@ _delay_us1
 
 /* reverse the bits in a byte */
 /* for using SPI to update a DDS for example */
+/********************
 char reverse_byte( char dat ){
 char dest,i;
 
@@ -517,6 +656,7 @@ char dest,i;
 
    return dest;
 }
+******************* unused */
 
 
 /* ******  Terminal functions  ****** */
@@ -585,16 +725,10 @@ void I2stop(){
 char I2send( char dat ){
 char nack;
 char i;
-char mask;
 
     for( i = 0; i < 8; ++i ){
        if( dat & 0x80 ) SDA_HIGH;
        else SDA_LOW;
-
-/* alt method:  mask = (dat & 0x80 )? 0xff : 0xff^8;
-                REG[PORTD] = (REG[PORTD] | 0x8) & mask;
-  is 1 instruction longer */
-
        SCL_HIGH;
        SCL_LOW;
        dat = dat << 1;
@@ -639,6 +773,8 @@ void clock( char val ){            /* control si5351 clocks, CLK_RX, CLK_TX, CLK
    si_write( 3, val ^ 0xff );
 }
 
+
+/* !!! check  For a bfo the divider will be different.  Maybe want to pass the PLLA or PLLB to this function */
 void wrt_dividers( char div ){      /* 128 * val - 512, same as (val-4) * 128 */
 
    div = ( div - 4 ) >> 1;
@@ -651,6 +787,8 @@ void wrt_dividers( char div ){      /* 128 * val - 512, same as (val-4) * 128 */
    si_write(  177, 0xA0 );                   /* double reset needed ? */
 }
 
+
+/* !!! maybe pass the PLLA or PLLB to this function also */
 void wrt_solution( ){                  /* loads the PLL information packet */
 char k;
 
@@ -663,6 +801,8 @@ char k;
 
 
 
+
+/* Si5351 calculation */
 /* char ref_clock[4] = { 0x01, 0x7D, 0x78, 0x40 };   /* 25mhz*/
 char ref_clock[4] = { 0x01, 0x7D, 0x78, 0x90 };   /* 25000080 */
 
@@ -671,21 +811,22 @@ char i;
 char b4,b3,b2,b1,b0;
 char a;
 
-
-     /* clock was 25001740 , 01 7D 7F 0C */
-
+   /* solution array  solution[ P3h,P3,P1u,P1h,P1,P2u,P2h,P2 ] */
+   /* if c is small enough, P1u and P2u will be zero and mashup of P3u bits is avoided */
    /* make c 16384, a value that can be masked with 16383 3fff */
-   /* try a different value, 8192 mask is 1fff */
-   solution[0] = 0x20;  solution[1] = 0x00; 
+   /* or use a smaller value if overflow in multiply, 8192 mask is 1fff */
+   /* solution[0] is 0x40 or 0x20 depending upon 16k or 8k value for c */
+   /* fix mask at end of function if this is changed, 3f or 1f */
+   solution[0] = 0x40;  solution[1] = 0x00;           /* P3 is c */
 
    /* pll freq is freq * divider */
-   ZDIVQ;
+   zdivq( );
    divq0 = divider;      /* multiplier */
    arg4 = 0, arg3 = freq3, arg2 = freq2, arg1 = freq1, arg0 = freq0;
-   i = multiply();
+   multiply();
 
    /* a is the PLL freq divided by the clock freq */
-   COPY_ACC_DIVQ;
+   copy_acc_divq( );
    arg4 = 0; arg3 = ref_clock[0];  arg2 = ref_clock[1];  arg1 = ref_clock[2];  arg0 = ref_clock[3];
    divide();
    a = divq0;       /* should be a small number, one byte */
@@ -693,11 +834,11 @@ char a;
    /* remainder is in the acc */
 
    /* b is r * c / clock */ 
-   COPY_ACC_DIVQ;
+   copy_acc_divq( );
    arg1 = solution[0];  arg0 = solution[1]; arg4 = arg3 = arg2 = 0;
    i= multiply();  
-  if( i ) { puts( "overflow in multiply " );  putchar( i + '0' ); puts( "\r\n" ); }
-   COPY_ACC_DIVQ;
+  if( i ) { puts( "multiply carry out " );  putchar( i + '0' ); crlf(); }
+   copy_acc_divq( );
    arg4 = 0; arg3 = ref_clock[0];  arg2 = ref_clock[1];  arg1 = ref_clock[2];  arg0 = ref_clock[3]; 
    divide();
    r4 = acc4, r3 = acc3, r2 = acc2, r1 = acc1, r0 = acc0;     /* save remainder */
@@ -714,7 +855,7 @@ char a;
    #endasm
    b4 = divq3, b3 = divq2, b2 = divq1, b1 = divq0, b0 = acc4 & 0x80;
    
-   /* remainder * 128 / clk , 2nd power term? */
+   /* remainder * 128 / clk , 7 more bits of precision */
    divq4 = r3, divq3 = r2, divq2 = r1, divq1 = r0;  divq0 = 0;  /* (256 * r) >> 1 */
    #asm
      CLC
@@ -726,37 +867,34 @@ char a;
    #endasm
    /* arg still has the clock, divide by clock again */
    divide();
-  /* r0 = divq0; */  /* or can we do this here */
    b0 = b0 | ( divq0 & 127 );
    
  
 
    /* P1 = 128 * a + 128 * b / c - 512 */
-   ZDIVQ;
+   zdivq( );
    divq0 = a;
-   ZARG;
+   zarg( );
    arg0 = 128;
    multiply();
    solution[2] = acc2, solution[3] = acc1, solution[4] = acc0;   /* save partial calc */
    /* 128 * b / c */
-   divq4 = b4, divq3 = b3, divq2 = b2, divq1 = b1, divq0 = b0;
-   ZARG;
+   divq4 = b4, divq3 = b3, divq2 = b2, divq1 = b1, divq0 = b0;   /* load 128*b */
+   zarg( );
    arg1 = solution[0], arg0 = solution[1];
    divide();
-   COPY_DIVQ_ACC;
+   copy_divq_acc( );
    arg4 = arg3 = 0, arg2 = solution[2], arg1 = solution[3], arg0 = solution[4];
    dadd();
-   ZARG;
+   zarg( );
    arg1 = 2;    /* 512 */
    dsub();
    solution[2] = acc2, solution[3] = acc1, solution[4] = acc0;
    
    /*   P2 = 128 * b - 128 * b/c * c   */
    /*   mask 128 * b with (c-1) since using power of two for c, skip two mults and a divide */
-   b2 = 0,  b1 = b1 & 0x1f;
+   b2 = 0,  b1 = b1 & 0x3f;        /* 3f or 1f depending up value for c */
    solution[5] = b2, solution[6] = b1, solution[7] = b0;
-
-/* return; */
 
    
 }

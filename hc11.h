@@ -15,11 +15,15 @@ char REG[];     /* REG[PORTE] accesses the PORTE register */
 #define PORTD  0x8
 #define DDRD   0x9
 #define PORTE  0xa
+#define TMSK2  0x24
+#define TFLG2  0x25
 #define BAUD   0x2B
 #define SCCR1  0x2C
 #define SCCR2  0x2D
 #define SCSR   0x2E
 #define SCDAT  0x2F
+#define CONFIG 0x3F
+
 
 
 #asm
