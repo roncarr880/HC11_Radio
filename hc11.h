@@ -12,6 +12,7 @@
 #endasm
 
 char REG[];     /* REG[PORTE] accesses the PORTE register */
+int  REGI[];
 
 /*
 #define PORTD  0x8
@@ -26,7 +27,7 @@ char REG[];     /* REG[PORTE] accesses the PORTE register */
 #define SCDAT  0x2F
 #define CONFIG 0x3F
 */
-/* register list from GNU headers */
+/* register list from GNU headers, adjusted int defs for REGI[] array access */
 #define PORTA   0x00
 #define _RES1   0x01
 #define PIOC    0x02
@@ -41,31 +42,31 @@ char REG[];     /* REG[PORTE] accesses the PORTE register */
 #define CFORC   0x0B
 #define OC1M    0x0C
 #define OC1D    0x0D
-#define TCTN    0x0E
-#define TCTN_H  0x0E
-#define TCTN_L  0x0F
-#define TIC1    0x10
+#define TCNT    0x0E/2
+#define TCNT_H  0x0E
+#define TCNT_L  0x0F
+#define TIC1    0x10/2
 #define TIC1_H  0x10
 #define TIC1_L  0x11
-#define TIC2    0x12
+#define TIC2    0x12/2
 #define TIC2_H  0x12
 #define TIC2_L  0x13
-#define TIC3    0x14
+#define TIC3    0x14/2
 #define TIC3_H  0x14
 #define TIC3_L  0x15
-#define TOC1    0x16
+#define TOC1    0x16/2
 #define TOC1_H  0x16
 #define TOC1_L  0x17
-#define TOC2    0x18
+#define TOC2    0x18/2
 #define TOC2_H  0x18
 #define TOC2_L  0x19
-#define TOC3    0x1A
+#define TOC3    0x1A/2
 #define TOC3_H  0x1A
 #define TOC3_L  0x1B
-#define TOC4    0x1C
+#define TOC4    0x1C/2
 #define TOC4_H  0x1C
 #define TOC4_L  0x1D
-#define TOC5    0x1E
+#define TOC5    0x1E/2
 #define TOC5_H  0x1E
 #define TOC5_L  0x1F
 #define TCTL1   0x20

@@ -5,6 +5,7 @@
    I think the sync jumper should be on for the LCD timing, enable will follow E stobe.
    Maybe not, E is the data pin on LCD chipselect decode, try off first for better address and data setup time.
    Works with sync off, so using sync off.
+   Had one LCD hiccup.
 
    have 2 pages in the LCD selected by scrolling left/right by 16
    address = row * $40 + page * 16  + column
@@ -84,8 +85,8 @@ struct BANDS bands[8] = {
    { 36, 10138700  },
    { 30, 14074000  },
    { 26, 18100000  },
-   { 24, 21094600+1400  },
-   { 22, 24924600+1000  },
+   { 24, 21094600  },
+   { 22, 24924600  },
    { 20, 28124600  }
 };
 
@@ -93,6 +94,9 @@ char band;
 char divider;
 char step;
 char total_nacks;
+
+char en_last;    /* save the previous encoder reading */
+
 
 
 /*  ***********  54 bytes available in zero page when using buffalo monitor ********** */
@@ -130,7 +134,7 @@ char b4,b3,b2,b1,b0;                   /* temp storage for b during si5351 calcu
 *  LDAB  #$93    * load option reg  here
 *  STAB  $1039
    JSR init
-   JMP main      * jump main,  main can loop or return to buffalo
+   JSR main      * jump main,  main can loop or return to buffalo
    RTS
 #endasm
 
@@ -160,7 +164,7 @@ struct BANDS rom_bands[8] = {
 void init(){   /* run once */
    
  /* variables */
-   band = 2;
+   band = 3;
    total_nacks = 0;
    sideband = USB;
    step = 3;
@@ -197,7 +201,10 @@ void init(){   /* run once */
 
    display_freq( TERM + LCD );
    display_mode();
+
+   encoder();
  
+   calc_solution( divider, ADD_BFO );     /* junk */
    crlf();  disp_solution();  crlf();      /* !!! junk */
 
 }
@@ -217,16 +224,13 @@ void copy_bandstack(){
 char *p1;
 char *p2;
 char i;
-char dv;
 
    p1 = bands;
    p2 = rom_bands;
 
    for( i = 0; i < 40; ++i ){
-     p1[i] = p2[i];             /* array form produces interesting asm code */
-     /* ******  pointer version needs intermediate dummy variable
-     dv = *p2++;
-     *p1++ = dv;     ****** */
+    /* p1[i] = p2[i];  */           /* array form produces interesting asm code */
+     *p1++ = *p2++;                 /* pointer method about same asm code */
    }
 
 }
@@ -238,6 +242,11 @@ char i;
 char job;
 char loops;
 char loopsh;
+char t;
+char bth,btl;   /* !!! remove - timing query */
+char ath,atl;
+int time1;
+
 
    loopsh = loops = job = i = 0;
 
@@ -252,13 +261,18 @@ for( ; ; ){                     /* loop main */
      REG[TFLG2] =  0x40;                 /* write one to clear */
      job = 1;
      ++loops;
-     if( loops == 0  && ++loopsh == 120 ) return( total_nacks );              /* 2 min then return */
+     if( loops == 0  && ++loopsh == 30 ) break;
      
   }
 
   switch( job ){                         /* do a different task each loop */
                                          /* timed tasks, each has 4ms between task visit */
     /* read switches, encoder, vox, etc */
+    case 1:
+      t = encoder();
+      if( t ) qsy( t, step );
+    break;
+
 
   }
 
@@ -266,7 +280,7 @@ for( ; ; ){                     /* loop main */
 
 }  /* end main loop */
 
-   /* ******************* skip all this test code
+ 
 
   lcd_goto( 0, 0, 1 );
   lcd_puts("Hidden Msg");
@@ -294,7 +308,7 @@ for( ; ; ){                     /* loop main */
     delay_int( 2000 );
   }
 
-  qsy( 0, 2 );
+  qsy( 255, 2 );
   display_freq(TERM+LCD);
   crlf();
 
@@ -308,15 +322,23 @@ for( ; ; ){                     /* loop main */
   }
   crlf();
 
-  lcd_goto( 0, 13, 0 );
-  lcd_puts("LSB");
-  cursor_at_step();
+  sideband = CW;
+  display_mode();
 
   puts( "Total Nacks ");
   display_number( TERM,3, 0,0,0, total_nacks );
   crlf();
 
-     *********************************** */
+  bth = REG[TCNT_H];  btl = REG[TCNT_L];
+  display_freq( LCD );
+  ath = REG[TCNT_H];  atl = REG[TCNT_L];
+  display_number( TERM,6, 0,0, bth, btl );   putchar(' ');
+  display_number( TERM,6, 0,0, ath, atl );   crlf();
+
+  time1 = REGI[TCNT];   /* indexes by a count of two since it is an int array, adjusted .h file */
+   
+  
+
 
 }    /* end main */
 
@@ -473,6 +495,8 @@ char i;
 
 void qsy( char dir, char step ){
 char i;
+
+   ++dir;            /* dir is -1 or 1,  255 -> 0,  1 -> 2 */
 
    acc4 = 0, acc3 = freq3, acc2 = freq2, acc1 = freq1, acc0 = freq0;
    i = arg4 = 0;
@@ -1097,6 +1121,23 @@ char a;
    solution[5] = 0, solution[6] = b1 & 0x3f, solution[7] = b0;   /* 3f or 1f depending up value for c */
 
    
+}
+
+
+/* just decode 2 states, encoder stops at state 3 when in the detent */
+/* 3 1 0 2 3     3 2 0 1 3 */
+char encoder(){
+char new;
+char retval;
+
+   retval = 0;
+   new = REG[PORTA] & 3;
+   if( new == 3 ){
+      if( en_last == 2 ) retval = 255;
+      if( en_last == 1 ) retval = 1;
+   }
+   en_last = new;
+   return retval;
 }
 
 
