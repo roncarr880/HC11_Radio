@@ -5,14 +5,10 @@
    I think the sync jumper should be on for the LCD timing, enable will follow E stobe.
    Maybe not, E is the data pin on LCD chipselect decode, try off first for better address and data setup time.
    Works with sync off, so using sync off.
-   Had one LCD hiccup.
+   Had one LCD hiccup.  Trying sync jumper on, works ok.
 
    have 2 pages in the LCD selected by scrolling left/right by 16
    address = row * $40 + page * 16  + column
-
-   Post tx mixer could have just two low pass filters, one at 15/16mhz and one at 33 mhz.
-   High side vfo, 11mhz IF.  Switch lower one inline for bands 80 - 20.  This idea does not consider
-   the local osc signal appearing post mixer, needs a very good balanced mixer.
 
    Moved U7 to U6 socket and removed the extra 32k of RAM.  Use U6load to load code into the EEPROM in
    U6.  This keeps the Buffalo monitor in the memory map with the current vectors to page 0.
@@ -24,6 +20,7 @@
    in the new range for the EEPROM starting at 8000 going to 9fff.  Possibly this value will alternate from
    03 to 12 hex as the test fails. No, it stays at 3 - so the EEPROM must return some other value than 
    the one written when a write is busy.  When we had ram at $8000 not sure why this test didn't pass. 
+   Removed J6 jumper for now.
 
 
    To do:
@@ -58,7 +55,21 @@
 #define LEFT 0
 #define RIGHT 1
 #define ADD_BFO 1
-#define USE_BFO 2
+#define JUST_THE_BFO 2
+
+/* button states */
+#define IDLE 0
+#define ARM 1
+#define DTDELAY 2
+#define DONE 3 
+#define TAP  4
+#define DTAP 5
+#define LONGPRESS 6
+#define DBOUNCE 15
+
+char press,nopress;
+char sw_state[3];    /* buttons */
+
 
 char solution[8];    /* si5351 freq solution to send to si5351 */
 char lcd_mode;      /* 8 or 4 bit data bus, using 4 bit, but 8 bit mode is used during lcd init */
@@ -97,6 +108,7 @@ char total_nacks;
 
 char en_last;    /* save the previous encoder reading */
 
+char int_count;  /* !!! debug */
 
 
 /*  ***********  54 bytes available in zero page when using buffalo monitor ********** */
@@ -194,7 +206,7 @@ void init(){   /* run once */
    wrt_solution( PLLB );
    wrt_divider( PLLB, divider );
 
-   calc_solution( 60, USE_BFO );        /* bfo */
+   calc_solution( 60, JUST_THE_BFO );        /* bfo */
    wrt_solution( PLLA );
    wrt_divider( PLLA, 60 );
    clock(CLK_RX+CLK_BFO);
@@ -203,6 +215,8 @@ void init(){   /* run once */
    display_mode();
 
    encoder();
+
+   interrupt_setup();
  
    calc_solution( divider, ADD_BFO );     /* junk */
    crlf();  disp_solution();  crlf();      /* !!! junk */
@@ -239,13 +253,12 @@ char i;
 
 void main(){
 char i;
+char t;
 char job;
 char loops;
 char loopsh;
-char t;
-char bth,btl;   /* !!! remove - timing query */
-char ath,atl;
 int time1;
+int time2;
 
 
    loopsh = loops = job = i = 0;
@@ -273,6 +286,42 @@ for( ; ; ){                     /* loop main */
       if( t ) qsy( t, step );
     break;
 
+    case 2:                                 /* analog read, single, mult or scan? */
+       REG[ADCTL] = 1;                      /* bit 5 scan, bit 4 mult */
+       while( (REG[ADCTL] & 0x80) == 0 );
+       t = REG[ADR2];                       /* switches on PE1, if use mult then other inputs are now valid */
+     /*  if( t > 20 ) display_number( TERM,4,0,0,0,t); */
+       button_state( t );
+    break;
+
+    case 3:
+       if( sw_state[0] > DONE ){
+        /* *** if( sw_state[0] == TAP ) puts("TAP ");
+          if( sw_state[0] == DTAP ) puts("DTAP ");
+          if( sw_state[0] == LONGPRESS ) puts("LONG "); **** */
+
+          if( sw_state[0] != LONGPRESS ) band_change( sw_state[0] );
+          sw_state[0] = DONE;
+       }
+    break;
+
+    case 4:
+       if( sw_state[1] > DONE ){
+          if( sw_state[1] == TAP ) mode_change();
+          sw_state[1] = DONE;
+       }
+    break;
+
+    case 5:
+       if( sw_state[2] > DONE ){
+          if( sw_state[2] == TAP ){
+             if( --step > 5 ) step = 5;
+             cursor_at_step();
+          }
+          sw_state[2] = DONE;
+       }
+    break;
+
 
   }
 
@@ -297,16 +346,18 @@ for( ; ; ){                     /* loop main */
   disp_solution();
   crlf();
 
-
+  tone_on();                   /* interrupts on */
   for( i = 0; i < 10; ++i ){
     qsy( 1, 1 );                  
-    calc_solution( divider, ADD_BFO );
-    wrt_solution( PLLB );
-    display_freq( TERM );
+    /***  calc_solution( divider, ADD_BFO );
+    wrt_solution( PLLB );  ****/
+    display_freq( TERM ); 
     disp_solution();
     crlf();
     delay_int( 2000 );
   }
+  tone_off();
+  puts("Interrupt counter ");  display_number(TERM,3,0,0,0,int_count); crlf();
 
   qsy( 255, 2 );
   display_freq(TERM+LCD);
@@ -329,15 +380,26 @@ for( ; ; ){                     /* loop main */
   display_number( TERM,3, 0,0,0, total_nacks );
   crlf();
 
-  bth = REG[TCNT_H];  btl = REG[TCNT_L];
+  time1 = REGI[TCNT];
   display_freq( LCD );
-  ath = REG[TCNT_H];  atl = REG[TCNT_L];
-  display_number( TERM,6, 0,0, bth, btl );   putchar(' ');
-  display_number( TERM,6, 0,0, ath, atl );   crlf();
+  time2 = REGI[TCNT];
+  time2 = time2 - time1;
+  #asm
+     STAA  2,X
+     STAB  3,X
+  #endasm
+  display_number( TERM,6, 0,0, i, t );   crlf();
 
-  time1 = REGI[TCNT];   /* indexes by a count of two since it is an int array, adjusted .h file */
-   
-  
+  int_count = 0;
+  tone_on();
+  delay( 60 );
+  tone_off();
+
+  t = REG[PORTA];    /* return values to monitor */
+  #asm
+    TBA
+  #endasm
+  t = int_count;
 
 
 }    /* end main */
@@ -395,6 +457,23 @@ char offset;
 
 }
 
+void band_change( char dir ){
+
+   save_vfo_info( band );
+   if( dir == TAP ) ++band;
+   else --band;
+
+   if( band == 255 ) band = 7;
+   if( band >= 8 ) band = 0;
+
+   load_vfo_info( band );
+   calc_solution( divider, ADD_BFO );
+   wrt_solution( PLLB );
+   wrt_divider( PLLB, divider );
+   display_freq( LCD );
+
+}
+
 void load_bfo_info( char side ){
 
    #asm
@@ -413,6 +492,27 @@ void load_bfo_info( char side ){
 
 }
 
+
+
+void mode_change(){
+
+   sideband = sideband + 4;
+   if( sideband > 8 ) sideband = 0;
+
+   load_bfo_info( sideband );
+
+   clock( 0 );
+   calc_solution( divider, ADD_BFO );       /* recalc vfo for different sideband */
+   wrt_solution( PLLB );
+   wrt_divider( PLLB, divider );
+
+   calc_solution( 60, JUST_THE_BFO );        /* bfo */
+   wrt_solution( PLLA );
+   /* wrt_divider( PLLA, 60 ); should be ok */
+   clock(CLK_RX+CLK_BFO);
+   display_mode();
+
+}
 
 void display_freq( char dev ){
 
@@ -519,7 +619,7 @@ char i;
    if( dir ) dadd();
    else dsub();
    freq3 = acc3, freq2 = acc2, freq1 = acc1, freq0 = acc0;
-   calc_solution( divider, USE_BFO );
+   calc_solution( divider, ADD_BFO );
    wrt_solution( PLLB );
    display_freq( LCD );
 
@@ -743,7 +843,7 @@ void lcd_data( char c ){
    EXT_DEV[LCD_DATA] = c;
 
    if( lcd_mode == FOUR_BIT_MODE ) EXT_DEV[LCD_DATA] = c << 4;
-   delay_us( 36 );   /* 40us - call/return load/store */
+   delay_us( 30 );   /* 40us - call/return load/store */
 }
 
 void lcd_command( char c ){
@@ -751,7 +851,7 @@ void lcd_command( char c ){
    EXT_DEV[LCD_COMMAND] = c;
 
    if( lcd_mode == FOUR_BIT_MODE )  EXT_DEV[LCD_COMMAND] = c << 4;
-   delay_us( 36 ); 
+   delay_us( 31 ); 
 }
 
 void lcd_goto( char row, char col, char page ){
@@ -1037,7 +1137,7 @@ char a;
    /*  add in the bfo, or use just the bfo.  Set up for adding the bfo to freq */
    arg4 = 0, arg3 = freq3, arg2 = freq2, arg1 = freq1, arg0 = freq0;
    acc4 = 0, acc0 = bfo0, acc1 = bfo1, acc2 = bfo2, acc3 = bfo3;
-   if( bfo_mode == USE_BFO ) zarg();
+   if( bfo_mode == JUST_THE_BFO ) zarg();
    else if( bfo_mode != ADD_BFO ) zacc();
    dadd();           /* add bfo or add zero to freq or zero to bfo */
    copy_acc_arg();   /* arg set for following multiply */
@@ -1140,4 +1240,107 @@ char retval;
    return retval;
 }
 
+
+void _timer2_compare(){      /* 600 hz tone on PA6 */
+
+/* use asm as have no data stack and integer code uses global _tempY */
+/* a longer interrupt function would need exclusive globals or adjust the X register for some locals */
+
+   #asm
+
+* REGI [ 0x18 / 2  ] = REGI [ 0x18 / 2  ] + 1667 ; 
+     LDD    REGI+24
+     ADDD   #1667
+     STD    REGI+24
+
+* REG [ 0x23  ] = 0x40 ;    clear int bit in flag register
+     LDAB   #64
+     STAB   REG+35
+
+   #endasm
+
+   ++int_count;         /* !!! remove */
+
+}       /* underscore function name gens RTI on exit */
+
+
+void interrupt_setup(){
+ 
+  /* REG[TFLG1] = 0x40;  */   /* write one to clear any pending int, not needed here */
+   REG[TCTL1] = 0x40;     /* pin toggle  PA6 */
+
+  /* write vector */
+  #asm
+    LDAB  #$7E      *; JMP
+    STAB  $dc
+    LDD   #_timer2_compare
+    STD   $dd
+  #endasm  
+
+}
+
+void tone_on(){
+
+    REGI[TOC2] = REGI[TCNT] + 1667;  /*  1st interrupt in half period */  
+    REG[TFLG1] = 0x40;               /* write one to clear any pending int */
+    REG[TMSK1] = 0x40;               /* int enable */
+    #asm
+      CLI
+    #endasm 
+}
+
+void tone_off(){
+
+   #asm
+     SEI
+   #endasm
+   REG[TMSK1] = 0;
+}
+
+void button_state( char val ){   /* state machine running at 4ms rate */
+char sw,st,i;
+ 
+      sw = 0;
+      if( val > 176 && val < 200 ) sw = 1;
+      if( val > 220 && val < 240 ) sw = 2;
+      if( val > 240 ) sw = 4;
+        
+      if( sw ) ++press, nopress= 0;
+      else ++nopress, press= 0;
+      
+      /* switch state machine */
+      for( i= 0; ; ++i ){     /* branch out of range */
+         st= sw_state[i];      /* temp the array value to save typing */
+
+         if( st == IDLE && (sw & 0x1) && press >= DBOUNCE ) st= ARM;
+         if( st == DONE && nopress >= DBOUNCE ) st = IDLE;   /* reset state */
+
+         /* double tap detect */
+         if( st == ARM && nopress >= DBOUNCE/2 )     st= DTDELAY;
+         if( st == ARM && (sw & 0x1 ) && press >= 8*DBOUNCE )  st= LONGPRESS;
+         if( st == DTDELAY && nopress >= 4*DBOUNCE ) st= TAP;
+         if( st == DTDELAY && ( sw & 0x1 ) && press >= DBOUNCE )   st= DTAP;
+         
+         sw_state[i]= st;      
+         sw = sw >> 1;   /* next switch */
+         if( i == 2 ) break;
+      }        
+}
+
+/*******   test integer shifts 
+void test( int i ){
+int j;
+char v;
+   i = i >> 4;
+   #asm
+_shift
+      LSRD
+      DEY
+      BNE _shift
+   #endasm
+   j = v;
+   i = i << j;
+   return i;
+} 
+***************/
 

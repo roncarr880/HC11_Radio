@@ -12,7 +12,7 @@
 #endasm
 
 char REG[];     /* REG[PORTE] accesses the PORTE register */
-int  REGI[];
+int  REGI[];    /* even address only as it is an int array, watch for odd address issue and add 1 */
 
 /*
 #define PORTD  0x8
