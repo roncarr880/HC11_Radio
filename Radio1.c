@@ -108,7 +108,6 @@ char total_nacks;
 
 char en_last;    /* save the previous encoder reading */
 
-char int_count;  /* !!! debug */
 
 
 /*  ***********  54 bytes available in zero page when using buffalo monitor ********** */
@@ -131,17 +130,17 @@ char b4,b3,b2,b1,b0;                   /* temp storage for b during si5351 calcu
 
 /* ************************* about 33 used ******************************* */
 
+/*
+    the X indexed data stack does not use much space, less than one 256 byte page 
+    so trying it at 0fff at the top of the global variable space.  It would take 16 nested 
+    subroutine calls to use 256 bytes.
+*/
 
-/* ************
 #asm
-  ORG $8000        2nd 32 k ram was replaced with the 8k rom, use U6load to load final code there. 
-#endasm
-************ */
-
-#asm
-   ORG $1040    * entry point at top of registers, the CB entry point
-*  ORG $8000
-   LDX  #$7ff0  * data top of ram, 14 locals, temp, secval space for main(), f0 to ff
+   ORG $1040    * RAM entry point at top of registers, the CB entry point
+*  ORG $8000    * or EPROM entry point, use U6load to load program here
+*  LDX  #$7ff0  * data stack top of ram, 14 locals, temp, secval space for main(), f0 to ff
+   LDX  #$0ff0  * or data stack just below the register space, grows down toward global variables
 *  LDS  #$01ff  * machine stack page 1
 *  LDAB  #$93    * load option reg  here
 *  STAB  $1039
@@ -154,9 +153,8 @@ char b4,b3,b2,b1,b0;                   /* temp storage for b during si5351 calcu
 /* variables here will work when running from RAM but not when running from ROM */
 
 char msg[] = "Hello 68HC11 SBC\r\n";   /* putting this in ROM or eeprom for non-monitor startup */
-/* char msg2[]= "boot SubBnd mode"; */
 
-#define BAND_WIDTH  2700
+#define BAND_WIDTH  2900
 long bfo_usb_lsb[3] = { 11059200 , 11059200 - BAND_WIDTH, 11059200 - BAND_WIDTH };
     /* USB, LSB, CW  to be copied to bfo variables */
 
@@ -176,9 +174,9 @@ struct BANDS rom_bands[8] = {
 void init(){   /* run once */
    
  /* variables */
-   band = 3;
+   band = 0;
    total_nacks = 0;
-   sideband = USB;
+   sideband = LSB;
    step = 3;
 
    serial_init();
@@ -189,12 +187,8 @@ void init(){   /* run once */
    puts( msg );         /* sign on message */
    crlf();
    lcd_puts( msg );
-  /* lcd_goto( 1, 0, 0 );
-   lcd_puts( msg2 ); */
    delay_int( 5000 );   /* pretend something useful is happening */
    lcd_clear_row( 0 );
- /*  lcd_clear_row( 1 ); */
-
 
  /*  REG[DDRD] = 0x22;  */     /* SS bit 5 portD as output pin, scope loop !!! */ 
 
@@ -212,15 +206,13 @@ void init(){   /* run once */
    clock(CLK_RX+CLK_BFO);
 
    display_freq( TERM + LCD );
+   crlf();
    display_mode();
 
-   encoder();
+   encoder();       /* pick up current state */
 
    interrupt_setup();
  
-   calc_solution( divider, ADD_BFO );     /* junk */
-   crlf();  disp_solution();  crlf();      /* !!! junk */
-
 }
 
 
@@ -267,15 +259,12 @@ for( ; ; ){                     /* loop main */
 
   /* high priority tasks here, done each loop */
 
-  if( job > 10 ) job = 0;       /* !!! adjust for number of tasks that need timing */         
-
   /* do work each 4 ms */
   if( (REG[TFLG2] & 0x40) == 0x40 ){     /* RTI flag */
      REG[TFLG2] =  0x40;                 /* write one to clear */
      job = 1;
      ++loops;
-     if( loops == 0  && ++loopsh == 30 ) break;
-     
+     if( loops == 0  && loopsh == 30 ) break;   /* !!! (debug timeout) changed exit to a switch press */     
   }
 
   switch( job ){                         /* do a different task each loop */
@@ -289,30 +278,31 @@ for( ; ; ){                     /* loop main */
     case 2:                                 /* analog read, single, mult or scan? */
        REG[ADCTL] = 1;                      /* bit 5 scan, bit 4 mult */
        while( (REG[ADCTL] & 0x80) == 0 );
-       t = REG[ADR2];                       /* switches on PE1, if use mult then other inputs are now valid */
+       t = REG[ADR2];                       /* buttons on PE1, if use mult then other inputs are now valid */
      /*  if( t > 20 ) display_number( TERM,4,0,0,0,t); */
        button_state( t );
     break;
 
-    case 3:
+    case 3:                          /* button under the freq display */
        if( sw_state[0] > DONE ){
         /* *** if( sw_state[0] == TAP ) puts("TAP ");
           if( sw_state[0] == DTAP ) puts("DTAP ");
           if( sw_state[0] == LONGPRESS ) puts("LONG "); **** */
 
           if( sw_state[0] != LONGPRESS ) band_change( sw_state[0] );
+          else loopsh = 30;       /* !!! exit on long press of this switch, debug only code */
           sw_state[0] = DONE;
        }
     break;
 
-    case 4:
+    case 4:                          /* button under the mode display */
        if( sw_state[1] > DONE ){
           if( sw_state[1] == TAP ) mode_change();
           sw_state[1] = DONE;
        }
     break;
 
-    case 5:
+    case 5:                          /* encoder switch */
        if( sw_state[2] > DONE ){
           if( sw_state[2] == TAP ){
              if( --step > 5 ) step = 5;
@@ -322,26 +312,27 @@ for( ; ; ){                     /* loop main */
        }
     break;
 
+  }     /* end switch */
 
+  if( job ){
+      if( ++job > 10 ) job = 0;       /* !!! adjust for number of tasks that need timing */
   }
 
-  if( job ) ++job;
 
 }  /* end main loop */
 
  
-
+  lcd_goto( 1, 0, 0 );
+  lcd_puts("Exit...");
   lcd_goto( 0, 0, 1 );
   lcd_puts("Hidden Msg");
-  delay_int( 5000 );
+  delay_int( 3000 );
   lcd_show_page( 1 );
-  delay_int( 5000 );
+  delay_int( 3000 );
   lcd_show_page( 0 );
-  delay_int( 5000 );
+  delay_int( 3000 );
   lcd_clear_row( 0 );
   display_freq(TERM+LCD);
-  crlf();
-
   calc_solution( divider, ADD_BFO );
   disp_solution();
   crlf();
@@ -349,18 +340,15 @@ for( ; ; ){                     /* loop main */
   tone_on();                   /* interrupts on */
   for( i = 0; i < 10; ++i ){
     qsy( 1, 1 );                  
-    /***  calc_solution( divider, ADD_BFO );
-    wrt_solution( PLLB );  ****/
     display_freq( TERM ); 
     disp_solution();
     crlf();
     delay_int( 2000 );
   }
   tone_off();
-  puts("Interrupt counter ");  display_number(TERM,3,0,0,0,int_count); crlf();
 
   qsy( 255, 2 );
-  display_freq(TERM+LCD);
+  display_freq(TERM);
   crlf();
 
   while( (REG[TFLG2] & 0x40) == 0 ); 
@@ -373,33 +361,26 @@ for( ; ; ){                     /* loop main */
   }
   crlf();
 
-  sideband = CW;
-  display_mode();
-
   puts( "Total Nacks ");
   display_number( TERM,3, 0,0,0, total_nacks );
   crlf();
 
   time1 = REGI[TCNT];
-  display_freq( LCD );
+  display_freq( LCD ); 
+ /* qsy( 1, 4 );  */
   time2 = REGI[TCNT];
-  time2 = time2 - time1;
+  time2 = time2 - time1;     /* longer than the counter can count for qsy() */
   #asm
      STAA  2,X
      STAB  3,X
   #endasm
   display_number( TERM,6, 0,0, i, t );   crlf();
 
-  int_count = 0;
-  tone_on();
-  delay( 60 );
-  tone_off();
-
   t = REG[PORTA];    /* return values to monitor */
   #asm
     TBA
   #endasm
-  t = int_count;
+  t = REG[PORTE];
 
 
 }    /* end main */
@@ -687,11 +668,7 @@ void copy_divq_acc(){
 }
 
 
-char dadd(){  /* add the accum and argument, return carry */
-char carry;
-
-   carry = 0;
-   #asm
+/*
       LDAB   acc0
       ADDB   arg0
       STAB   acc0
@@ -710,17 +687,40 @@ char carry;
       inc   2,X
 _dadd1 
       STAB   acc4
+
+*/
+
+
+
+char dadd(){  /* add the accum and argument, return carry */
+char carry;
+
+   carry = 0;
+   #asm
+      LDD    acc1
+      ADDB   arg0     *; could save 1 cycle with ADDD arg1
+      ADCA   arg1
+      STD    acc1
+      LDD    acc3
+      ADCB   arg2
+      ADCA   arg3
+      STD    acc3
+      LDAB   acc4
+      ADCB   arg4
+      bcc   _dadd1
+      inc   2,X
+_dadd1 
+      STAB   acc4
    #endasm
 
    return carry;
 
 }
 
-char dsub(){  /* sub the arg from the accum, return borrow */
-char borrow;
 
-   borrow = 0;   
-   #asm
+
+/*
+   
      LDAB   acc0
      SUBB   arg0
      STAB   acc0
@@ -733,6 +733,28 @@ char borrow;
      LDAB   acc3
      SBCB   arg3
      STAB   acc3
+     LDAB   acc4
+     SBCB   arg4
+     bcc    _dsub1    ; borrow is carry true 
+     inc   2,X
+_dsub1
+     STAB   acc4
+*/
+
+
+char dsub(){  /* sub the arg from the accum, return borrow */
+char borrow;
+
+   borrow = 0;   
+   #asm
+     LDD    acc1
+     SUBB   arg0
+     SBCA   arg1
+     STD    acc1
+     LDD    acc3
+     SBCB   arg2
+     SBCA   arg3
+     STD    acc3    
      LDAB   acc4
      SBCB   arg4
      bcc    _dsub1    ; borrow is carry true 
@@ -1242,26 +1264,11 @@ char retval;
 
 
 void _timer2_compare(){      /* 600 hz tone on PA6 */
+   
+   REGI[TOC2] = REGI[TOC2] + 1667;
+   REG[TFLG1] = 0x40;
 
-/* use asm as have no data stack and integer code uses global _tempY */
-/* a longer interrupt function would need exclusive globals or adjust the X register for some locals */
-
-   #asm
-
-* REGI [ 0x18 / 2  ] = REGI [ 0x18 / 2  ] + 1667 ; 
-     LDD    REGI+24
-     ADDD   #1667
-     STD    REGI+24
-
-* REG [ 0x23  ] = 0x40 ;    clear int bit in flag register
-     LDAB   #64
-     STAB   REG+35
-
-   #endasm
-
-   ++int_count;         /* !!! remove */
-
-}       /* underscore function name gens RTI on exit */
+}       /* RTI */
 
 
 void interrupt_setup(){
