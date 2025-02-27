@@ -33,6 +33,8 @@
 /* all globals here, 3582 locations from $200 to registers at $1000 */
 /* statics don't work as they are inline with code( illegal instructions ), use globals */
 
+#define DBG 1
+
 #define FOUR_BIT_MODE 0x20
 #define EIGHT_BIT_MODE 0x30
 
@@ -82,7 +84,7 @@ char sideband;
 
 struct BANDS {      /* we can init a structure but need to access with assembly code */
   char divider;
-  long freq;        /* stored little endian */
+  long freq;
 };
 
 
@@ -116,8 +118,8 @@ char en_last;    /* save the previous encoder reading */
     ORG $0
 #endasm
 
-char freq0, freq1, freq2, freq3;              /* little endian order */
-char bfo0, bfo1, bfo2, bfo3;
+char freq3, freq2, freq1, freq0;
+char bfo3, bfo2, bfo1, bfo0;
  
   /* 40 bit math */ 
 char divq4, divq3, divq2, divq1, divq0;       /* dividend, quotient, multiplicand */
@@ -197,16 +199,18 @@ void init(){   /* run once */
    si5351_init();
 
    calc_solution( divider, ADD_BFO );   /* vfo + IF */
-   wrt_solution( PLLB );
-   wrt_divider( PLLB, divider );
-
-   calc_solution( 60, JUST_THE_BFO );        /* bfo */
-   wrt_solution( PLLA );
-   wrt_divider( PLLA, 60 );
-   clock(CLK_RX+CLK_BFO);
+   write_solution( PLLB );
+   write_divider( PLLB, divider );
 
    display_freq( TERM + LCD );
+   disp_solution();
    crlf();
+
+   calc_solution( 60, JUST_THE_BFO );        /* bfo */
+   write_solution( PLLA );
+   write_divider( PLLA, 60 );
+   clock(CLK_RX+CLK_BFO);
+
    display_mode();
 
    encoder();       /* pick up current state */
@@ -216,7 +220,7 @@ void init(){   /* run once */
 }
 
 
-/* !!! debug function */
+/* debug function, note: display_solution is too long a function name */
 void disp_solution( ){
 char i;
 
@@ -247,6 +251,8 @@ void main(){
 char i;
 char t;
 char job;
+
+/* debug vars below */
 char loops;
 char loopsh;
 int time1;
@@ -279,16 +285,11 @@ for( ; ; ){                     /* loop main */
        REG[ADCTL] = 1;                      /* bit 5 scan, bit 4 mult */
        while( (REG[ADCTL] & 0x80) == 0 );
        t = REG[ADR2];                       /* buttons on PE1, if use mult then other inputs are now valid */
-     /*  if( t > 20 ) display_number( TERM,4,0,0,0,t); */
        button_state( t );
     break;
 
     case 3:                          /* button under the freq display */
        if( sw_state[0] > DONE ){
-        /* *** if( sw_state[0] == TAP ) puts("TAP ");
-          if( sw_state[0] == DTAP ) puts("DTAP ");
-          if( sw_state[0] == LONGPRESS ) puts("LONG "); **** */
-
           if( sw_state[0] != LONGPRESS ) band_change( sw_state[0] );
           else loopsh = 30;       /* !!! exit on long press of this switch, debug only code */
           sw_state[0] = DONE;
@@ -321,67 +322,8 @@ for( ; ; ){                     /* loop main */
 
 }  /* end main loop */
 
- 
   lcd_goto( 1, 0, 0 );
   lcd_puts("Exit...");
-  lcd_goto( 0, 0, 1 );
-  lcd_puts("Hidden Msg");
-  delay_int( 3000 );
-  lcd_show_page( 1 );
-  delay_int( 3000 );
-  lcd_show_page( 0 );
-  delay_int( 3000 );
-  lcd_clear_row( 0 );
-  display_freq(TERM+LCD);
-  calc_solution( divider, ADD_BFO );
-  disp_solution();
-  crlf();
-
-  tone_on();                   /* interrupts on */
-  for( i = 0; i < 10; ++i ){
-    qsy( 1, 1 );                  
-    display_freq( TERM ); 
-    disp_solution();
-    crlf();
-    delay_int( 2000 );
-  }
-  tone_off();
-
-  qsy( 255, 2 );
-  display_freq(TERM);
-  crlf();
-
-  while( (REG[TFLG2] & 0x40) == 0 ); 
-  REG[TFLG2] =  0x40;                 
-  while( (REG[TFLG2] & 0x40) == 0 );   
-  REG[TFLG2] =  0x40;                  
-  while( (REG[TFLG2] & 0x40) == 0 ){  
-     delay(1);
-     putchar('.');
-  }
-  crlf();
-
-  puts( "Total Nacks ");
-  display_number( TERM,3, 0,0,0, total_nacks );
-  crlf();
-
-  time1 = REGI[TCNT];
-  display_freq( LCD ); 
- /* qsy( 1, 4 );  */
-  time2 = REGI[TCNT];
-  time2 = time2 - time1;     /* longer than the counter can count for qsy() */
-  #asm
-     STAA  2,X
-     STAB  3,X
-  #endasm
-  display_number( TERM,6, 0,0, i, t );   crlf();
-
-  t = REG[PORTA];    /* return values to monitor */
-  #asm
-    TBA
-  #endasm
-  t = REG[PORTE];
-
 
 }    /* end main */
 
@@ -404,13 +346,13 @@ char offset;
       LDAB  0,Y
       STAB  divider
       LDAB  1,Y
-      STAB  freq0
-      LDAB  2,Y
-      STAB  freq1
-      LDAB  3,Y
-      STAB  freq2
-      LDAB  4,Y
       STAB  freq3
+      LDAB  2,Y
+      STAB  freq2
+      LDAB  3,Y
+      STAB  freq1
+      LDAB  4,Y
+      STAB  freq0
    #endasm
 
 }
@@ -426,13 +368,13 @@ char offset;
      LDAB 3,X
      LDY  #bands
      ABY
-     LDAB freq0
-     STAB 1,Y
-     LDAB freq1
-     STAB 2,Y
-     LDAB freq2
-     STAB 3,Y
      LDAB freq3
+     STAB 1,Y
+     LDAB freq2
+     STAB 2,Y
+     LDAB freq1
+     STAB 3,Y
+     LDAB freq0
      STAB 4,Y
    #endasm
 
@@ -449,8 +391,8 @@ void band_change( char dir ){
 
    load_vfo_info( band );
    calc_solution( divider, ADD_BFO );
-   wrt_solution( PLLB );
-   wrt_divider( PLLB, divider );
+   write_solution( PLLB );
+   write_divider( PLLB, divider );
    display_freq( LCD );
 
 }
@@ -462,13 +404,13 @@ void load_bfo_info( char side ){
       LDY   #bfo_usb_lsb
       ABY
       LDAB  0,Y
-      STAB  bfo0
-      LDAB  1,Y
-      STAB  bfo1
-      LDAB  2,Y
-      STAB  bfo2
-      LDAB  3,Y
       STAB  bfo3
+      LDAB  1,Y
+      STAB  bfo2
+      LDAB  2,Y
+      STAB  bfo1
+      LDAB  3,Y
+      STAB  bfo0
    #endasm
 
 }
@@ -484,12 +426,12 @@ void mode_change(){
 
    clock( 0 );
    calc_solution( divider, ADD_BFO );       /* recalc vfo for different sideband */
-   wrt_solution( PLLB );
-   wrt_divider( PLLB, divider );
+   write_solution( PLLB );
+   write_divider( PLLB, divider );
 
    calc_solution( 60, JUST_THE_BFO );        /* bfo */
-   wrt_solution( PLLA );
-   /* wrt_divider( PLLA, 60 ); should be ok */
+   write_solution( PLLA );
+   /* write_divider( PLLA, 60 ); should be ok */
    clock(CLK_RX+CLK_BFO);
    display_mode();
 
@@ -508,18 +450,13 @@ char mode_str2[] = "LSB";
 char mode_str3[] = "CW ";
 
 void display_mode( ){
-char *p;
 
-
- /*  lcd_puts( &mode_str1[sideband] ); */   /* addresses past mode_str1 into the others */
-    /* !!! almost works, saves D reg instead of Y.  String lits are done with D reg */
-   p = &mode_str1[sideband];
    lcd_goto( 0, 13, 0 );
-   lcd_puts( p );
+   lcd_puts( &mode_str1[sideband] );    /* addresses past mode_str1 into the others */
    cursor_at_step();
 }
 
-/* numbers are stored little endian, 68hc11 access is big endian, get one byte at a time */
+/*  68hc11 access is big endian */
 long decades[9] = { 1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000 };
 
 void display_number(char dev, char digits, char n3, char n2, char n1, char n0){
@@ -540,13 +477,13 @@ char c;
         LDY   #decades
         ABY
         LDAB  0,Y
-        STAB  arg0
-        LDAB  1,Y
-        STAB  arg1
-        LDAB  2,Y
-        STAB  arg2
-        LDAB  3,Y
         STAB  arg3
+        LDAB  1,Y
+        STAB  arg2
+        LDAB  2,Y
+        STAB  arg1
+        LDAB  3,Y
+        STAB  arg0
       #endasm
       copy_acc_divq( ); 
       divide();
@@ -576,6 +513,9 @@ char i;
 
 void qsy( char dir, char step ){
 char i;
+char dev;
+
+   dev = ( DBG ) ? LCD+TERM : LCD;
 
    ++dir;            /* dir is -1 or 1,  255 -> 0,  1 -> 2 */
 
@@ -588,21 +528,26 @@ char i;
      LDY  #decades
      ABY
      LDAB  0,Y
-     STAB  arg0
-     LDAB  1,Y
-     STAB  arg1
-     LDAB  2,Y
-     STAB  arg2
-     LDAB  3,Y
      STAB  arg3
+     LDAB  1,Y
+     STAB  arg2
+     LDAB  2,Y
+     STAB  arg1
+     LDAB  3,Y
+     STAB  arg0
    #endasm
      
    if( dir ) dadd();
    else dsub();
    freq3 = acc3, freq2 = acc2, freq1 = acc1, freq0 = acc0;
    calc_solution( divider, ADD_BFO );
-   wrt_solution( PLLB );
-   display_freq( LCD );
+   write_solution( PLLB );
+   display_freq( dev );
+
+   if( DBG ){
+     disp_solution();
+     crlf();
+   }
 
 
 }
@@ -1111,7 +1056,7 @@ void clock( char val ){            /* control si5351 clocks, CLK_RX, CLK_TX, CLK
 
 
 
-void wrt_divider( char pllx, char div ){    
+void write_divider( char pllx, char div ){    
 
   /* 128 * val - 512, same as (val-4) * 128 */
   /* pllx = pllx + 19;              dividers offset from PLLA or PLLB by 19 */
@@ -1127,7 +1072,7 @@ void wrt_divider( char pllx, char div ){
 
 
 /*  pass the PLLA or PLLB to this function also */
-void wrt_solution( char pllx ){                  /* loads the PLL information packet */
+void write_solution( char pllx ){                  /* loads the PLL information packet */
 char k;
 
    I2start();
