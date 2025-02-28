@@ -5,7 +5,7 @@
    I think the sync jumper should be on for the LCD timing, enable will follow E stobe.
    Maybe not, E is the data pin on LCD chipselect decode, try off first for better address and data setup time.
    Works with sync off, so using sync off.
-   Had one LCD hiccup.  Trying sync jumper on, works ok.
+   Had one LCD hiccup.  Trying sync jumper on, works ok.  Had more hiccups.  Long press encoder to reset.
 
    have 2 pages in the LCD selected by scrolling left/right by 16
    address = row * $40 + page * 16  + column
@@ -81,6 +81,11 @@ char lcd_page;
 #define LSB 4
 #define CW  8
 char sideband;
+
+#define OOB 0
+#define EX 1
+#define ADV 2
+#define GEN 3
 
 struct BANDS {      /* we can init a structure but need to access with assembly code */
   char divider;
@@ -170,6 +175,55 @@ struct BANDS rom_bands[8] = {
    { 24, 21094600  },
    { 22, 24924600  },
    { 20, 28124600  }
+};
+
+struct BAND_LIMITS {
+   char band;
+   long freq;
+   char type;
+};
+
+#define NUM_LIMITS 31
+
+struct BAND_LIMITS band_limits[ NUM_LIMITS ] = {
+   { 0,  3500000, EX  },
+   { 0,  3525000, GEN },
+   { 0,  3600000, EX  },
+   { 0,  3700000, ADV },
+   { 0,  3800000, GEN },
+   { 0,  4000000, OOB },
+
+   { 1,  7000000, EX  },
+   { 1,  7025000, GEN },
+   { 1,  7125000, ADV },
+   { 1,  7175000, GEN },
+   { 1,  7300000, OOB },
+
+   { 2, 10100000, GEN },
+   { 2, 10150000, OOB },
+
+   { 3, 14000000, EX  },
+   { 3, 14025000, GEN },
+   { 3, 14150000, EX  },
+   { 3, 14175000, ADV },
+   { 3, 14225000, GEN },
+   { 3, 14350000, OOB },
+
+   { 4, 18068000, GEN },
+   { 4, 18168000, OOB },
+
+   { 5, 21000000, EX  },
+   { 5, 21025000, GEN },
+   { 5, 21200000, EX  },
+   { 5, 21225000, ADV },
+   { 5, 21275000, GEN },
+   { 5, 21450000, OOB },
+
+   { 6, 24890000, GEN },
+   { 6, 24990000, OOB },
+
+   { 7, 28000000, GEN },
+   { 7, 29700000, OOB }
 };
 
 
@@ -309,6 +363,10 @@ for( ; ; ){                     /* loop main */
              if( --step > 5 ) step = 5;
              cursor_at_step();
           }
+          if( sw_state[2] == LONGPRESS ){
+             lcd_init( FOUR_BIT_MODE );      /* lcd went blank, reset */
+             display_freq( LCD );
+          }
           sw_state[2] = DONE;
        }
     break;
@@ -393,6 +451,7 @@ void band_change( char dir ){
    calc_solution( divider, ADD_BFO );
    write_solution( PLLB );
    write_divider( PLLB, divider );
+   disp_band_limit();
    display_freq( LCD );
 
 }
@@ -542,6 +601,7 @@ char dev;
    freq3 = acc3, freq2 = acc2, freq1 = acc1, freq0 = acc0;
    calc_solution( divider, ADD_BFO );
    write_solution( PLLB );
+   disp_band_limit();
    display_freq( dev );
 
    if( DBG ){
@@ -550,6 +610,58 @@ char dev;
    }
 
 
+}
+
+
+char limit_str[] = "oobex advgen";
+
+void disp_band_limit(){
+char type;
+char i;
+char *p;
+char k;
+
+   type = OOB;
+   p = band_limits;
+   for( i = 0; i < NUM_LIMITS; ++i ){
+      if( *p == band ){
+         if( check_limit( i ) ) type = *(p+5);    /* band_limits[i].type */
+      }
+      p = p + 6;
+   }
+   
+   lcd_goto( 1, 13, 0 );
+   i = 0;
+   while( type-- ) i = i + 3;   /* index into limit_str */
+   for( k = 0; k < 3; ++k ) lcd_data( limit_str[i+k] );
+   
+}
+
+
+char check_limit( char indx ){
+char *p;
+char f3,f2,f1,f0;
+
+   p = band_limits;
+   while( indx-- ) p = p + 6;
+  /* ++p; */
+   f3 = *++p;
+   f2 = *++p;
+   f1 = *++p;
+   f0 = *++p;
+
+   if( freq3 > f3 ) return 1;
+   if( freq3 == f3 ){
+      if( freq2 > f2 ) return 1;
+      if( freq2 == f2 ){
+        if( freq1 > f1 ) return 1;
+        if( freq1 == f1 ){
+           if( freq0 >= f0 ) return 1;
+        }
+      }
+   }
+
+   return 0;
 }
 
 /**********************  40 bit math **********************/
@@ -810,7 +922,7 @@ void lcd_data( char c ){
    EXT_DEV[LCD_DATA] = c;
 
    if( lcd_mode == FOUR_BIT_MODE ) EXT_DEV[LCD_DATA] = c << 4;
-   delay_us( 30 );   /* 40us - call/return load/store */
+   delay_us( 40 );   /* 40us - call/return load/store */
 }
 
 void lcd_command( char c ){
@@ -818,7 +930,7 @@ void lcd_command( char c ){
    EXT_DEV[LCD_COMMAND] = c;
 
    if( lcd_mode == FOUR_BIT_MODE )  EXT_DEV[LCD_COMMAND] = c << 4;
-   delay_us( 31 ); 
+   delay_us( 40 ); 
 }
 
 void lcd_goto( char row, char col, char page ){
