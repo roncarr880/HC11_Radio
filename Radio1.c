@@ -6,6 +6,7 @@
    Maybe not, E is the data pin on LCD chipselect decode, try off first for better address and data setup time.
    Works with sync off, so using sync off.
    Had one LCD hiccup.  Trying sync jumper on, works ok.  Had more hiccups.  Long press encoder to reset.
+   Trying sync jumper off again.
 
    have 2 pages in the LCD selected by scrolling left/right by 16
    address = row * $40 + page * 16  + column
@@ -84,8 +85,9 @@ char sideband;
 
 #define OOB 0
 #define EX 1
-#define ADV 2
-#define GEN 3
+#define GCW 2
+#define ADV 3
+#define GEN 4
 
 struct BANDS {      /* we can init a structure but need to access with assembly code */
   char divider;
@@ -183,46 +185,49 @@ struct BAND_LIMITS {
    char type;
 };
 
-#define NUM_LIMITS 31
+#define NUM_LIMITS 34
 
 struct BAND_LIMITS band_limits[ NUM_LIMITS ] = {
    { 0,  3500000, EX  },
-   { 0,  3525000, GEN },
+   { 0,  3525000, GCW },
    { 0,  3600000, EX  },
    { 0,  3700000, ADV },
    { 0,  3800000, GEN },
    { 0,  4000000, OOB },
 
    { 1,  7000000, EX  },
-   { 1,  7025000, GEN },
+   { 1,  7025000, GCW },
    { 1,  7125000, ADV },
    { 1,  7175000, GEN },
    { 1,  7300000, OOB },
 
-   { 2, 10100000, GEN },
+   { 2, 10100000, GCW },
    { 2, 10150000, OOB },
 
    { 3, 14000000, EX  },
-   { 3, 14025000, GEN },
+   { 3, 14025000, GCW },
    { 3, 14150000, EX  },
    { 3, 14175000, ADV },
    { 3, 14225000, GEN },
    { 3, 14350000, OOB },
 
-   { 4, 18068000, GEN },
+   { 4, 18068000, GCW },
+   { 4, 18110000, GEN },
    { 4, 18168000, OOB },
 
    { 5, 21000000, EX  },
-   { 5, 21025000, GEN },
+   { 5, 21025000, GCW },
    { 5, 21200000, EX  },
    { 5, 21225000, ADV },
    { 5, 21275000, GEN },
    { 5, 21450000, OOB },
 
-   { 6, 24890000, GEN },
+   { 6, 24890000, GCW },
+   { 6, 24930000, GEN },
    { 6, 24990000, OOB },
 
-   { 7, 28000000, GEN },
+   { 7, 28000000, GCW },
+   { 7, 28300000, GEN },
    { 7, 29700000, OOB }
 };
 
@@ -382,6 +387,9 @@ for( ; ; ){                     /* loop main */
 
   lcd_goto( 1, 0, 0 );
   lcd_puts("Exit...");
+
+  /* for ROM version, jump to E000 instead of return after changing the boot switch */
+  /* or do not provide an exit command - would need to power cycle */
 
 }    /* end main */
 
@@ -613,7 +621,7 @@ char dev;
 }
 
 
-char limit_str[] = "oobex advgen";
+char limit_str[] = "oobex cw advgen";
 
 void disp_band_limit(){
 char type;
@@ -623,11 +631,28 @@ char k;
 
    type = OOB;
    p = band_limits;
+   arg4 = 0, arg3 = freq3, arg2 = freq2, arg1 = freq1, arg0 = freq0;
+
    for( i = 0; i < NUM_LIMITS; ++i ){
+
       if( *p == band ){
-         if( check_limit( i ) ) type = *(p+5);    /* band_limits[i].type */
+         acc4 = 0;
+             /* acc3 = p[1], acc2 = p[2], acc1 = p[3], acc0 = p[4]; */
+         #asm
+            ldy    4,X
+            ldab   1,Y
+            stab   acc3
+            ldab   2,Y
+            stab   acc2
+            ldab   3,Y
+            stab   acc1
+            ldab   4,Y
+            stab   acc0
+         #endasm
+            
+         if( dsub() ) type = *(p+5);    /* band_limits[i].type */
       }
-      p = p + 6;
+      p = p + 6;         /* next entry in band limits struct */
    }
    
    lcd_goto( 1, 13, 0 );
@@ -637,14 +662,14 @@ char k;
    
 }
 
-
+/********************************
 char check_limit( char indx ){
 char *p;
 char f3,f2,f1,f0;
 
    p = band_limits;
    while( indx-- ) p = p + 6;
-  /* ++p; */
+  /* ++p; 
    f3 = *++p;
    f2 = *++p;
    f1 = *++p;
@@ -663,6 +688,7 @@ char f3,f2,f1,f0;
 
    return 0;
 }
+************************/
 
 /**********************  40 bit math **********************/
 
@@ -725,29 +751,6 @@ void copy_divq_acc(){
 }
 
 
-/*
-      LDAB   acc0
-      ADDB   arg0
-      STAB   acc0
-      LDAB   acc1
-      ADCB   arg1
-      STAB   acc1
-      LDAB   acc2
-      ADCB   arg2
-      STAB   acc2
-      LDAB   acc3
-      ADCB   arg3
-      STAB   acc3
-      LDAB   acc4
-      ADCB   arg4
-      bcc   _dadd1
-      inc   2,X
-_dadd1 
-      STAB   acc4
-
-*/
-
-
 
 char dadd(){  /* add the accum and argument, return carry */
 char carry;
@@ -774,29 +777,6 @@ _dadd1
 
 }
 
-
-
-/*
-   
-     LDAB   acc0
-     SUBB   arg0
-     STAB   acc0
-     LDAB   acc1
-     SBCB   arg1
-     STAB   acc1
-     LDAB   acc2
-     SBCB   arg2
-     STAB   acc2
-     LDAB   acc3
-     SBCB   arg3
-     STAB   acc3
-     LDAB   acc4
-     SBCB   arg4
-     bcc    _dsub1    ; borrow is carry true 
-     inc   2,X
-_dsub1
-     STAB   acc4
-*/
 
 
 char dsub(){  /* sub the arg from the accum, return borrow */
@@ -864,11 +844,15 @@ char divi;
 */
 char multiply( ){
 char over;
+char b;
 
     over = 0;
     zacc( );
+    b = divq0|divq1|divq2|divq3|divq4;
 
-    while( divq0|divq1|divq2|divq3|divq4 ){
+  /*  while( divq0|divq1|divq2|divq3|divq4 ){ */
+    while( b ){
+
        if( divq0 & 1 ) if( dadd() ) over = 1;
  
        #asm
@@ -885,6 +869,15 @@ char over;
          ROL arg2
          ROL arg3
          ROL arg4
+
+         LDY   #divq4
+         LDAB  0,Y
+         ORAB  1,Y
+         ORAB  2,Y
+         ORAB  3,Y
+         ORAB  4,Y
+         STAB  3,X    *; variable b
+
        #endasm
     }
 
@@ -1388,7 +1381,8 @@ char sw,st,i;
          sw_state[i]= st;      
          sw = sw >> 1;   /* next switch */
          if( i == 2 ) break;
-      }        
+      }
+        
 }
 
 /*******   test integer shifts 
